@@ -1,7 +1,7 @@
 # Amazon Identity Center bulk import
 
-Import users from a CSV into an IAM Identity Center group. Each row becomes a
-user in the identity store and a member of the group you name.
+Import users from a CSV into IAM Identity Center. Each row becomes a user in the
+identity store, and optionally a member of a group you name.
 
 ## Running it in AWS CloudShell
 
@@ -177,7 +177,7 @@ Makes no AWS calls, so it costs nothing to run first:
 
 ```bash
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --group my-group --csv users.csv --validate-only
+                --csv users.csv --username-from prefix --validate-only
 ```
 
 Fix anything it reports. It lists every problem at once with line numbers.
@@ -186,36 +186,56 @@ Fix anything it reports. It lists every problem at once with line numbers.
 
 ```bash
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --group my-group --csv users.csv
+                --csv users.csv --username-from prefix
 ```
 
 The script looks up every row first and shows you the plan before writing:
 
 ```
 CSV OK: 2 user(s) in users.csv
-target group: my-group (a1b2c3d4-5678-90ab-cdef-EXAMPLE11111)
-plan: create 2 new user(s), 0 already exist; all 2 added to my-group
-  new: ada@example.com (Ada Lovelace)
-  new: grace@example.com (Grace Hopper)
+no --group given: creating users only, no group membership
+plan: create 2 new user(s), 0 already exist; no group membership changes
+  new: ada@example.com (Ada Lovelace) as ada
+  new: grace@example.com (Grace Hopper) as grace
 proceed? [y/N]
 ```
 
-Read the create count before answering. If the group is mapped to a paid role in
-a downstream application, every new member is a subscription.
+Read the create count before answering, and check the `as <username>` values are
+what you expect. `--username-from prefix` uses the local part before `@`, so
+`ada@example.com` becomes `ada`; drop the flag to use the whole address instead.
 
-Rerunning the same CSV is safe — existing users are reused and existing
-memberships are left alone — so if you're unsure, run it again rather than
-guessing at what happened.
+Rerunning the same CSV is safe — existing users are reused — so if you're unsure,
+run it again rather than guessing at what happened.
+
+### Adding them to a group
+
+The command above creates users only, which grants no access anywhere. To also
+put every row in a group, pass `--group`:
+
+```bash
+./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
+                --group my-group --csv users.csv --username-from prefix
+```
+
+The group must already exist — list what's there with `aws identitystore
+list-groups --identity-store-id "$IDS" --region "$REGION" --query
+'Groups[].DisplayName'`. Existing memberships are left alone, so this is also
+safe to rerun.
+
+Check the create count carefully when using `--group`: if that group is mapped to
+a paid role in a downstream application like Amazon Quick, every new member is a
+subscription.
 
 ## Permissions
 
 CloudShell uses the identity you signed into the console as. That principal needs:
 
 ```
-identitystore:GetGroupId
 identitystore:GetUserId
 identitystore:CreateUser
-identitystore:CreateGroupMembership
+identitystore:DescribeUser        # only with --username-from prefix
+identitystore:GetGroupId          # only with --group
+identitystore:CreateGroupMembership   # only with --group
 ```
 
 `--validate-only` needs none of them. `AccessDeniedException` on `GetUserId` in
@@ -247,7 +267,7 @@ as the input, so a retry is just:
 
 ```bash
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --group my-group --csv failed.csv
+                --csv failed.csv --username-from prefix
 ```
 
 ## Options
@@ -275,7 +295,7 @@ scripted run needs `--yes`:
 
 ```bash
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --group my-group --csv users.csv --yes 2>&1 | tee import.log
+                --csv users.csv --username-from prefix --yes 2>&1 | tee import.log
 ```
 
 ## Before your first real run
@@ -286,7 +306,7 @@ pointing it at the full file:
 ```bash
 head -3 users.csv > pilot.csv   # header + 2 users
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --group my-group --csv pilot.csv
+                --csv pilot.csv --username-from prefix
 ```
 
 Confirm those two look right in the Identity Center console, then run the full
