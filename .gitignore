@@ -1,0 +1,14 @@
+# Real user data — never commit. Contains names and email addresses.
+users.csv
+pilot.csv
+failed.csv
+*.jsonl
+import.log
+
+# Keep the sample
+!users.example.csv
+
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
