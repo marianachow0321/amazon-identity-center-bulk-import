@@ -91,24 +91,25 @@ QUICK_ARN=$(aws quicksight describe-account-subscription \
 
 aws sso-admin list-instances --region "$REGION" --output json \
 | jq -r --arg mgmt "$MGMT" --arg quick "$QUICK_ARN" '
-    ["IDENTITY_STORE","OWNER","TYPE","QUICK_USES_IT"],
+    ["IDENTITY_STORE","TYPE","QUICK_USES_IT","OWNER_ACCOUNT"],
     (.Instances[] | [
       .IdentityStoreId,
-      .OwnerAccountId,
       (if .OwnerAccountId == $mgmt then "organization" else "account" end),
-      (if .InstanceArn == $quick then "YES <-- use this" else "no" end)
+      (if .InstanceArn == $quick then "YES <-- use this" else "no" end),
+      .OwnerAccountId
     ]) | @tsv' | column -t -s$'\t'
 ```
 
 ```
-IDENTITY_STORE  OWNER         TYPE          QUICK_USES_IT
-d-0987654321    444455556666  account       no
-d-1234567890    111122223333  organization  YES <-- use this
+IDENTITY_STORE  TYPE          QUICK_USES_IT     OWNER_ACCOUNT
+d-0987654321    account       no                444455556666
+d-1234567890    organization  YES <-- use this  111122223333
 ```
 
-`jq` and `column` are both preinstalled in CloudShell. Take the `IdentityStoreId`
-from the row marked `YES` and use it as `IDS` in the previous section, whether it
-says `organization` or `account`.
+`jq` and `column` are both preinstalled in CloudShell. Take the value from the
+**IDENTITY_STORE** column of the row marked `YES` — it always starts with `d-`.
+Don't take `OWNER_ACCOUNT`; that's a 12-digit AWS account ID and passing it as
+`--identity-store-id` fails validation.
 
 The `TYPE` column comes from `OwnerAccountId`: the organization instance is owned
 by your org's management account, so anything else is an account instance. In the

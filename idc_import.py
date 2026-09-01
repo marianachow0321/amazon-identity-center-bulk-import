@@ -43,6 +43,14 @@ EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 REQUIRED_COLUMNS = ("email", "firstname", "lastname")
 CSV_HEADER = "email,firstName,lastName\n"
 
+# Identity store IDs are "d-" plus 10 hex chars, or a UUID. Checked locally so a
+# wrong value fails with a readable message instead of a botocore traceback.
+IDS_RE = re.compile(
+    r"^(d-[0-9a-f]{10}"
+    r"|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
+ACCOUNT_ID_RE = re.compile(r"^\d{12}$")
+
 
 @dataclass(frozen=True)
 class Row:
@@ -258,6 +266,22 @@ def confirm(prompt: str) -> bool:
 
 
 def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
+    if not IDS_RE.match(args.identity_store_id):
+        print(
+            f"--identity-store-id {args.identity_store_id!r} is not an identity "
+            "store ID. Expected 'd-' followed by 10 hex characters, "
+            "e.g. d-1234567890.",
+            file=sys.stderr,
+        )
+        if ACCOUNT_ID_RE.match(args.identity_store_id):
+            print(
+                "  That looks like a 12-digit AWS account ID. If you copied it "
+                "from a list-instances table, take the IdentityStoreId column, "
+                "not OwnerAccountId.",
+                file=sys.stderr,
+            )
+        return 2
+
     rows, errors = load_csv(args.csv)
     if errors:
         print(f"CSV validation failed ({len(errors)} problem(s)):", file=sys.stderr)
@@ -274,7 +298,11 @@ def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
             build_client(args.region, args.profile), args.identity_store_id
         )
 
-    group_id = store.group_id(args.group)
+    try:
+        group_id = store.group_id(args.group)
+    except ClientError as exc:
+        print(f"could not look up group {args.group!r}: {_code(exc)} {exc}", file=sys.stderr)
+        return 3
     if group_id is None:
         print(
             f"group {args.group!r} not found in identity store {args.identity_store_id}",
