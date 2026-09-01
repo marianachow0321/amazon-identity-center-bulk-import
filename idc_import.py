@@ -10,6 +10,10 @@ For each row: create the user if they don't exist, then add them to the group.
 Both steps are idempotent, so rerunning the same CSV is safe and does nothing the
 second time -- that is also how you retry failures.
 
+Omit --group to create users only, with no group membership. Note that in a
+downstream app like Amazon Quick, access comes from group membership, so
+users created this way have none until you add them to a mapped group.
+
 The tool first looks up every row and prints how many users it would create,
 then asks to confirm. Pass --yes to skip the prompt in scripts.
 
@@ -229,7 +233,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--identity-store-id", required=True, help="e.g. d-1234567890")
     p.add_argument("--region", required=True, help="region of the IdC instance")
-    p.add_argument("--group", required=True, help="displayName of the target group")
+    p.add_argument(
+        "--group",
+        help="displayName of the target group. Omit to create users only, "
+        "without adding them to any group",
+    )
     p.add_argument("--csv", required=True, help="path to users CSV")
     p.add_argument("--profile", help="AWS profile name")
     p.add_argument(
@@ -298,18 +306,26 @@ def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
             build_client(args.region, args.profile), args.identity_store_id
         )
 
-    try:
-        group_id = store.group_id(args.group)
-    except ClientError as exc:
-        print(f"could not look up group {args.group!r}: {_code(exc)} {exc}", file=sys.stderr)
-        return 3
-    if group_id is None:
-        print(
-            f"group {args.group!r} not found in identity store {args.identity_store_id}",
-            file=sys.stderr,
-        )
-        return 3
-    print(f"target group: {args.group} ({group_id})")
+    group_id = None
+    if args.group:
+        try:
+            group_id = store.group_id(args.group)
+        except ClientError as exc:
+            print(
+                f"could not look up group {args.group!r}: {_code(exc)} {exc}",
+                file=sys.stderr,
+            )
+            return 3
+        if group_id is None:
+            print(
+                f"group {args.group!r} not found in identity store "
+                f"{args.identity_store_id}",
+                file=sys.stderr,
+            )
+            return 3
+        print(f"target group: {args.group} ({group_id})")
+    else:
+        print("no --group given: creating users only, no group membership")
 
     failures = FailureFile(args.failures)
     counts = {"created": 0, "existing": 0, "added": 0, "present": 0, "failed": 0}
@@ -329,9 +345,14 @@ def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
 
     to_create = [(r, u) for r, u in plan if u is None]
     existing = [(r, u) for r, u in plan if u is not None]
+    destination = (
+        f"all {len(plan)} added to {args.group}"
+        if group_id
+        else "no group membership changes"
+    )
     print(
         f"plan: create {len(to_create)} new user(s), "
-        f"{len(existing)} already exist; all {len(plan)} added to {args.group}"
+        f"{len(existing)} already exist; {destination}"
     )
     for row, _ in to_create:
         print(f"  new: {row.email} ({row.display_name})")
@@ -358,13 +379,14 @@ def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
                 counts["existing"] += 1
                 print(f"EXISTS        {row.email} -> {user_id}")
 
-            result = store.add_member(group_id, user_id)
-            counts[result] += 1
-            print(
-                "              added to group"
-                if result == "added"
-                else "              already in group"
-            )
+            result = store.add_member(group_id, user_id) if group_id else None
+            if result:
+                counts[result] += 1
+                print(
+                    "              added to group"
+                    if result == "added"
+                    else "              already in group"
+                )
 
         except ClientError as exc:
             counts["failed"] += 1
@@ -374,11 +396,16 @@ def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
         if args.sleep:
             time.sleep(args.sleep)
 
-    print(
+    summary = (
         f"\nsummary: {counts['created']} created, {counts['existing']} existing, "
-        f"{counts['added']} added to group, {counts['present']} already member, "
-        f"{counts['failed']} failed"
     )
+    if group_id:
+        summary += (
+            f"{counts['added']} added to group, "
+            f"{counts['present']} already member, "
+        )
+    summary += f"{counts['failed']} failed"
+    print(summary)
 
     retry_path = failures.write()
     if retry_path:

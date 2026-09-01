@@ -256,7 +256,7 @@ as the input, so a retry is just:
 |---|---|
 | `--identity-store-id` | required, `d-…` from `list-instances` |
 | `--region` | required, Region of the Identity Center instance |
-| `--group` | required, group `displayName` |
+| `--group` | group `displayName`; omit to create users only |
 | `--csv` | required, path to the input file |
 | `--validate-only` | check the CSV and exit, no AWS calls |
 | `--yes` / `-y` | skip the confirmation prompt |
