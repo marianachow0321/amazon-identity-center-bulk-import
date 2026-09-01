@@ -21,6 +21,10 @@ CSV format (header required, extra columns ignored):
 
     email,firstName,lastName
     ada@example.com,Ada,Lovelace
+
+The userName is derived from the email: by default the local part before @, so
+ada@example.com becomes "ada". Pass --username-from email to use the whole
+address instead.
 """
 
 from __future__ import annotations
@@ -72,14 +76,18 @@ class Row:
 def derive_username(email: str, mode: str) -> str:
     """The identity store userName for a row.
 
-    'email' uses the whole address, which is what SCIM from most IdPs produces.
-    'prefix' uses the local part, which reads better but is not unique across
-    domains -- load_csv rejects a file where two rows collide.
+    'prefix' (the default) uses the local part before @, which reads better and
+    matches stores that use short handles. It is not unique across domains, so
+    load_csv rejects a file where two rows collide, and an existing user matched
+    by prefix has their email checked before being reused.
+
+    'email' uses the whole address, which is what SCIM from most IdPs produces
+    and is unambiguous.
     """
     return email.split("@", 1)[0] if mode == "prefix" else email
 
 
-def load_csv(path: str, username_from: str = "email") -> tuple[list[Row], list[str]]:
+def load_csv(path: str, username_from: str = "prefix") -> tuple[list[Row], list[str]]:
     """Parse and validate the whole file up front.
 
     Returns (rows, errors). Validation is a separate pass so a malformed file is
@@ -288,10 +296,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--username-from",
         choices=("email", "prefix"),
-        default="email",
-        help="what to use as the identity store userName: the full address "
-        "(default), or the local part before @. 'prefix' reads better but is "
-        "not unique across domains",
+        default="prefix",
+        help="what to use as the identity store userName: the local part before "
+        "@ (default), or the full address. 'prefix' reads better, but is not "
+        "unique across domains, so a colliding CSV is rejected",
     )
     p.add_argument(
         "--validate-only", action="store_true", help="check the CSV and exit; no AWS calls"

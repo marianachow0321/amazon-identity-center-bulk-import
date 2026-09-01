@@ -177,7 +177,7 @@ Makes no AWS calls, so it costs nothing to run first:
 
 ```bash
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --csv users.csv --username-from prefix --validate-only
+                --csv users.csv --validate-only
 ```
 
 Fix anything it reports. It lists every problem at once with line numbers.
@@ -186,7 +186,7 @@ Fix anything it reports. It lists every problem at once with line numbers.
 
 ```bash
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --csv users.csv --username-from prefix
+                --csv users.csv
 ```
 
 The script looks up every row first and shows you the plan before writing:
@@ -201,8 +201,9 @@ proceed? [y/N]
 ```
 
 Read the create count before answering, and check the `as <username>` values are
-what you expect. `--username-from prefix` uses the local part before `@`, so
-`ada@example.com` becomes `ada`; drop the flag to use the whole address instead.
+what you expect. The username defaults to the local part before `@`, so
+`ada@example.com` becomes `ada`. Pass `--username-from email` to use the whole
+address instead.
 
 Rerunning the same CSV is safe — existing users are reused — so if you're unsure,
 run it again rather than guessing at what happened.
@@ -214,7 +215,7 @@ put every row in a group, pass `--group`:
 
 ```bash
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --group my-group --csv users.csv --username-from prefix
+                --group my-group --csv users.csv
 ```
 
 The group must already exist — list what's there with `aws identitystore
@@ -233,7 +234,7 @@ CloudShell uses the identity you signed into the console as. That principal need
 ```
 identitystore:GetUserId
 identitystore:CreateUser
-identitystore:DescribeUser        # only with --username-from prefix
+identitystore:DescribeUser        # not needed with --username-from email
 identitystore:GetGroupId          # only with --group
 identitystore:CreateGroupMembership   # only with --group
 ```
@@ -267,7 +268,7 @@ as the input, so a retry is just:
 
 ```bash
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --csv failed.csv --username-from prefix
+                --csv failed.csv
 ```
 
 ## Options
@@ -281,7 +282,7 @@ as the input, so a retry is just:
 | `--validate-only` | check the CSV and exit, no AWS calls |
 | `--yes` / `-y` | skip the confirmation prompt |
 | `--failures` | where to write retryable rows (default `failed.csv`) |
-| `--username-from` | `email` (default) or `prefix`, the local part before @ |
+| `--username-from` | `prefix` (default), the local part before @, or `email` |
 | `--sleep` | pause between users (default `0.2`); raise if throttled |
 | `--profile` | AWS profile; not needed in CloudShell |
 
@@ -295,7 +296,7 @@ scripted run needs `--yes`:
 
 ```bash
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --csv users.csv --username-from prefix --yes 2>&1 | tee import.log
+                --csv users.csv --yes 2>&1 | tee import.log
 ```
 
 ## Before your first real run
@@ -306,7 +307,7 @@ pointing it at the full file:
 ```bash
 head -3 users.csv > pilot.csv   # header + 2 users
 ./idc_import.py --identity-store-id "$IDS" --region "$REGION" \
-                --csv pilot.csv --username-from prefix
+                --csv pilot.csv
 ```
 
 Confirm those two look right in the Identity Center console, then run the full
