@@ -15,44 +15,116 @@ plain Python and boto3, so it runs anywhere you have credentials.
 
 Identity Center is regional. Open CloudShell from the AWS console (terminal icon
 in the top bar), then read the instance details straight out of the API rather
-than copying them by hand:
+than copying them by hand. Include `OwnerAccountId` — you need it if more than
+one instance comes back:
 
 ```bash
 aws sso-admin list-instances \
-  --query 'Instances[].{IdentityStoreId:IdentityStoreId,Region:PrimaryRegion,Status:Status}' \
+  --query 'Instances[].{IdentityStoreId:IdentityStoreId,Owner:OwnerAccountId,Region:PrimaryRegion,Status:Status}' \
   --output table
 ```
 
 ```
---------------------------------------------
-|               ListInstances              |
-+------------------+-------------+---------+
-|  IdentityStoreId |   Region    | Status  |
-+------------------+-------------+---------+
-|  d-9067e5bbba    |  us-east-1  |  ACTIVE |
-+------------------+-------------+---------+
+--------------------------------------------------------------
+|                       ListInstances                        |
++------------------+----------------+-------------+----------+
+|  IdentityStoreId |     Owner      |   Region    |  Status  |
++------------------+----------------+-------------+----------+
+|  d-1234567890    |  111122223333  |  us-east-1  |  ACTIVE  |
++------------------+----------------+-------------+----------+
 ```
 
-If exactly one instance is listed, capture both values into variables and use
-them for the rest of this guide:
+`list-instances` only returns instances in the Region the CLI is pointed at, so
+an empty table means wrong Region, not no instance.
+
+**If two or more rows come back, stop and read the next section before going on.**
+Picking the wrong one is the most expensive mistake available here.
+
+Now set `IDS` to the `IdentityStoreId` you want — typed out explicitly, from the
+table above — and derive the Region from that specific instance:
 
 ```bash
-IDS=$(aws sso-admin list-instances --query 'Instances[0].IdentityStoreId' --output text)
-REGION=$(aws sso-admin list-instances --query 'Instances[0].PrimaryRegion' --output text)
-echo "$IDS $REGION"
+IDS=d-1234567890          # <- paste yours here
+
+REGION=$(aws sso-admin list-instances \
+  --query "Instances[?IdentityStoreId=='$IDS'].PrimaryRegion | [0]" --output text)
+echo "IDS=$IDS REGION=$REGION"
 ```
 
-Check the count first if you're unsure — `Instances[0]` silently picks the wrong
-one if there are several:
+That should print exactly one value each, on one line:
+
+```
+IDS=d-1234567890 REGION=us-east-1
+```
+
+If `REGION` prints twice, or prints `None`, don't continue — every later command
+passes it to `--region` and you'll get `doesn't match a supported format`. Two
+values means the query matched more than one instance; `None` means `IDS` doesn't
+match anything in this Region.
+
+Use `PrimaryRegion` and not your CloudShell Region. It's where the identity store
+actually lives, and it's what the script needs.
+
+### If more than one instance is listed
+
+`list-instances` returns both the organization instance and any account instance
+visible to you. The ARN doesn't tell them apart — both look like
+`arn:aws:sso:::instance/ssoins-…` with an empty account field.
+
+**Don't pick by preference.** Whatever consumes these users is bound to exactly
+one instance. Import into the other one and the users really are created in
+Identity Center, the script reports success, and nothing ever appears downstream.
+
+This labels each instance and marks the one Amazon Quick is bound to. Set
+`REGION` to the Region you're working in, spelled out — you haven't safely
+established `$REGION` yet at this point:
 
 ```bash
-aws sso-admin list-instances --query 'length(Instances)' --output text
+REGION=us-east-1
+
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+MGMT=$(aws organizations describe-organization \
+  --query 'Organization.MasterAccountId' --output text 2>/dev/null || echo none)
+QUICK_ARN=$(aws quicksight describe-account-subscription \
+  --aws-account-id "$ACCOUNT" --region "$REGION" \
+  --query 'AccountInfo.IAMIdentityCenterInstanceArn' --output text 2>/dev/null || echo none)
+
+aws sso-admin list-instances --region "$REGION" --output json \
+| jq -r --arg mgmt "$MGMT" --arg quick "$QUICK_ARN" '
+    ["IDENTITY_STORE","OWNER","TYPE","QUICK_USES_IT"],
+    (.Instances[] | [
+      .IdentityStoreId,
+      .OwnerAccountId,
+      (if .OwnerAccountId == $mgmt then "organization" else "account" end),
+      (if .InstanceArn == $quick then "YES <-- use this" else "no" end)
+    ]) | @tsv' | column -t -s$'\t'
 ```
 
-Note that `list-instances` only returns instances in the Region the CLI is
-pointed at, so if it comes back empty, switch the CloudShell Region and retry.
-`PrimaryRegion` is the Region the identity store actually lives in, and it's what
-the script needs — not wherever your CloudShell tab happens to be.
+```
+IDENTITY_STORE  OWNER         TYPE          QUICK_USES_IT
+d-0987654321    444455556666  account       no
+d-1234567890    111122223333  organization  YES <-- use this
+```
+
+`jq` and `column` are both preinstalled in CloudShell. Take the `IdentityStoreId`
+from the row marked `YES` and use it as `IDS` in the previous section, whether it
+says `organization` or `account`.
+
+The `TYPE` column comes from `OwnerAccountId`: the organization instance is owned
+by your org's management account, so anything else is an account instance. In the
+management account itself the two coincide, but account instances can't be created
+there, so there's nothing to disambiguate.
+
+If every row says `no`, one of these is true:
+
+- **Quick is in a different AWS account than your CloudShell session.** Pass that
+  account's ID as `--aws-account-id` instead of `$ACCOUNT`.
+- **`describe-account-subscription` failed.** The `|| echo none` swallows the
+  error — rerun that command on its own to see it.
+
+If the marked row is the organization instance and you wanted the account
+instance, the binding is what has to change, not the value you pass to the script
+— and rebinding means resubscribing.
 
 ## 2. Confirm the environment (optional)
 
@@ -120,7 +192,7 @@ The script looks up every row first and shows you the plan before writing:
 
 ```
 CSV OK: 2 user(s) in users.csv
-target group: my-group (9418f4c8-f0f1-7062-c31e-b88635de7fc4)
+target group: my-group (a1b2c3d4-5678-90ab-cdef-EXAMPLE11111)
 plan: create 2 new user(s), 0 already exist; all 2 added to my-group
   new: ada@example.com (Ada Lovelace)
   new: grace@example.com (Grace Hopper)
