@@ -261,6 +261,7 @@ as the input, so a retry is just:
 | `--validate-only` | check the CSV and exit, no AWS calls |
 | `--yes` / `-y` | skip the confirmation prompt |
 | `--failures` | where to write retryable rows (default `failed.csv`) |
+| `--username-from` | `email` (default) or `prefix`, the local part before @ |
 | `--sleep` | pause between users (default `0.2`); raise if throttled |
 | `--profile` | AWS profile; not needed in CloudShell |
 

@@ -62,13 +62,24 @@ class Row:
     email: str
     first_name: str
     last_name: str
+    username: str
 
     @property
     def display_name(self) -> str:
         return f"{self.first_name} {self.last_name}".strip()
 
 
-def load_csv(path: str) -> tuple[list[Row], list[str]]:
+def derive_username(email: str, mode: str) -> str:
+    """The identity store userName for a row.
+
+    'email' uses the whole address, which is what SCIM from most IdPs produces.
+    'prefix' uses the local part, which reads better but is not unique across
+    domains -- load_csv rejects a file where two rows collide.
+    """
+    return email.split("@", 1)[0] if mode == "prefix" else email
+
+
+def load_csv(path: str, username_from: str = "email") -> tuple[list[Row], list[str]]:
     """Parse and validate the whole file up front.
 
     Returns (rows, errors). Validation is a separate pass so a malformed file is
@@ -97,6 +108,7 @@ def load_csv(path: str) -> tuple[list[Row], list[str]]:
             ]
 
         seen: dict[str, int] = {}
+        seen_username: dict[str, tuple[int, str]] = {}
         for record in reader:
             line = reader.line_num
             cell = lambda col: (record.get(columns[col]) or "").strip()  # noqa: E731
@@ -117,12 +129,23 @@ def load_csv(path: str) -> tuple[list[Row], list[str]]:
             if email.lower() in seen:
                 problems.append(f"duplicate email, first seen on line {seen[email.lower()]}")
 
+            username = derive_username(email, username_from) if email else ""
+            if username and username.lower() in seen_username:
+                first_line, first_email = seen_username[username.lower()]
+                problems.append(
+                    f"username {username!r} collides with {first_email} on line "
+                    f"{first_line}. Two addresses in different domains share a "
+                    f"local part; use --username-from email, or give one of them "
+                    f"a distinct address"
+                )
+
             if problems:
                 errors.extend(f"line {line}: {p}" for p in problems)
                 continue
 
             seen[email.lower()] = line
-            rows.append(Row(line, email, first, last))
+            seen_username[username.lower()] = (line, email)
+            rows.append(Row(line, email, first, last, username))
 
     if not rows and not errors:
         errors.append(f"{path} contains a header but no data rows")
@@ -156,14 +179,14 @@ class IdentityStore:
                 return None
             raise
 
-    def user_id(self, email: str) -> str | None:
+    def user_id(self, username: str) -> str | None:
         try:
             return self.client.get_user_id(
                 IdentityStoreId=self.ids,
                 AlternateIdentifier={
                     "UniqueAttribute": {
                         "AttributePath": "userName",
-                        "AttributeValue": email,
+                        "AttributeValue": username,
                     }
                 },
             )["UserId"]
@@ -172,10 +195,21 @@ class IdentityStore:
                 return None
             raise
 
+    def primary_email(self, user_id: str) -> str | None:
+        """The existing user's primary email, for confirming identity on reuse."""
+        described = self.client.describe_user(
+            IdentityStoreId=self.ids, UserId=user_id
+        )
+        emails = described.get("Emails") or []
+        for entry in emails:
+            if entry.get("Primary"):
+                return entry.get("Value")
+        return emails[0].get("Value") if emails else None
+
     def create_user(self, row: Row) -> str:
         return self.client.create_user(
             IdentityStoreId=self.ids,
-            UserName=row.email,
+            UserName=row.username,
             DisplayName=row.display_name,
             Name={"GivenName": row.first_name, "FamilyName": row.last_name},
             Emails=[{"Value": row.email, "Type": "work", "Primary": True}],
@@ -252,6 +286,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="write failed rows here in input format for retry (default: failed.csv)",
     )
     p.add_argument(
+        "--username-from",
+        choices=("email", "prefix"),
+        default="email",
+        help="what to use as the identity store userName: the full address "
+        "(default), or the local part before @. 'prefix' reads better but is "
+        "not unique across domains",
+    )
+    p.add_argument(
         "--validate-only", action="store_true", help="check the CSV and exit; no AWS calls"
     )
     p.add_argument(
@@ -290,7 +332,7 @@ def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
             )
         return 2
 
-    rows, errors = load_csv(args.csv)
+    rows, errors = load_csv(args.csv, args.username_from)
     if errors:
         print(f"CSV validation failed ({len(errors)} problem(s)):", file=sys.stderr)
         for err in errors:
@@ -337,7 +379,22 @@ def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
     plan: list[tuple[Row, str | None]] = []
     for row in rows:
         try:
-            plan.append((row, store.user_id(row.email)))
+            user_id = store.user_id(row.username)
+            if user_id is not None and args.username_from == "prefix":
+                # The username is only the local part, so a match is not proof of
+                # identity. Confirm the email before treating this as the same
+                # person, or we would silently add the wrong user to the group.
+                found = store.primary_email(user_id)
+                if found and found.lower() != row.email.lower():
+                    counts["failed"] += 1
+                    failures.add(row)
+                    print(
+                        f"FAILED        {row.email}: username {row.username!r} "
+                        f"already belongs to {found}. Refusing to reuse it",
+                        file=sys.stderr,
+                    )
+                    continue
+            plan.append((row, user_id))
         except ClientError as exc:
             counts["failed"] += 1
             failures.add(row)
@@ -355,7 +412,7 @@ def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
         f"{len(existing)} already exist; {destination}"
     )
     for row, _ in to_create:
-        print(f"  new: {row.email} ({row.display_name})")
+        print(f"  new: {row.email} ({row.display_name}) as {row.username}")
 
     if not plan:
         print("nothing to do")
