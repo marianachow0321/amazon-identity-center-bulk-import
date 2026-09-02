@@ -58,6 +58,9 @@ IDS_RE = re.compile(
     r"|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
 )
 ACCOUNT_ID_RE = re.compile(r"^\d{12}$")
+# Loose on purpose: matches us-east-1, ap-southeast-3, us-gov-west-1. Exists to
+# catch an empty or unset shell variable, not to police the region list.
+REGION_RE = re.compile(r"^([a-z]+-){2,3}\d+$")
 
 
 @dataclass(frozen=True)
@@ -336,6 +339,22 @@ def run(args: argparse.Namespace, store: IdentityStore | None = None) -> int:
                 "  That looks like a 12-digit AWS account ID. If you copied it "
                 "from a list-instances table, take the IdentityStoreId column, "
                 "not OwnerAccountId.",
+                file=sys.stderr,
+            )
+        return 2
+
+    if not REGION_RE.match(args.region):
+        shown = args.region if args.region else "(empty)"
+        print(
+            f"--region {shown!r} is not a Region name. Expected something like "
+            "us-east-1.",
+            file=sys.stderr,
+        )
+        if not args.region.strip():
+            print(
+                "  The value is empty, so $REGION is probably unset. Shell "
+                "variables do not survive a CloudShell session ending; set IDS "
+                "and REGION again.",
                 file=sys.stderr,
             )
         return 2

@@ -255,6 +255,21 @@ tmux new -s import
 # ctrl-b d to detach, tmux attach -t import to come back
 ```
 
+**`$IDS` and `$REGION` don't survive the session.** Only files under `$HOME`
+persist; shell variables are gone when the session ends or you open a new tab. A
+later command then builds a broken endpoint like
+`https://identitystore..amazonaws.com`. Re-set them, or keep them in a file you
+source:
+
+```bash
+cat > ~/idc-import/env.sh <<'EOF'
+IDS=d-1234567890
+REGION=us-east-1
+EOF
+
+source ~/idc-import/env.sh    # at the start of each session
+```
+
 **Your CSV contains personal data.** Home directory storage is private to you,
 but delete the file when you're done rather than leaving names and email
 addresses sitting in persistent storage:
